@@ -5,6 +5,8 @@ from PIL import Image
 from datasets import load_dataset
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor
 from qwen_vl_utils import process_vision_info
+from huggingface_hub import hf_hub_download
+from tqdm import tqdm  # 导入进度条库
 
 # default: Load the model on the available device(s)
 from qwen_vl_utils import process_vision_info
@@ -12,7 +14,7 @@ from huggingface_hub import hf_hub_download
 
 # 配置参数
 class Args:
-    model_path = "/data/weiyang2/Qwen2.5-VL-72B-Instruct"
+    model_path = "/data/weiyang/Qwen2.5-VL-72B-Instruct"
     conv_mode = "qwen_vl"
     answers_file = "./answers/answers.jsonl"
     temperature = 0.0
@@ -68,7 +70,7 @@ def process_question(line, processor):
     
     return inputs.to(model.device), text
 
-def generate_response(model, inputs):
+def generate_response(model, inputs, processor):
     """多卡生成响应"""
     with torch.no_grad():
         generated_ids = model.generate(**inputs, max_new_tokens=Args.max_new_tokens)
@@ -85,24 +87,29 @@ if __name__ == "__main__":
     torch.manual_seed(Args.seed)
     
     print("Loading model...")
-    tokenizer, model = load_model(Args.model_path)
+    processor, model = load_model(Args.model_path)
     
     dataset = load_dataset("craigwu/vstar_bench", split="test")
     
     os.makedirs(os.path.dirname(Args.answers_file), exist_ok=True)
     
     with open(Args.answers_file, "w") as f:
-        for idx, line in enumerate(dataset):
-            inputs, prompt = process_question(line, tokenizer)
-            response = generate_response(model, inputs)
-            
+        # 添加进度条
+        for idx, line in enumerate(tqdm(dataset, desc="Processing questions")):
+            inputs, prompt = process_question(line, processor)
+            response = generate_response(model, inputs, processor)
+            response_text = response[0] if isinstance(response, list) else response
             # 提取bbox结果
             bbox = "未找到"  # 默认值
-            if "bbox:[" in response:
-                start = response.find("bbox:[") + 6
-                end = response.find("]", start)
-                bbox = response[start:end]
+
+            start = response_text.find("[")
+            end = response_text.find("]", start) if start != -1 else -1
             
+            if start != -1 and end != -1:
+                # 提取 `[x1,y1,x2,y2]` 部分
+                bbox = response_text[start:end+1]  # +1 包含 `]`
+            # print(bbox)
+            # assert 0           
             result = {
                 "question_id": idx,
                 "prompt": prompt,
